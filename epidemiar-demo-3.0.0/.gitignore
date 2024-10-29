@@ -1,0 +1,40 @@
+# History files
+.Rhistory
+# Example code in package build process
+*-Ex.R
+# R data files from past sessions
+.Rdata
+.Rproj.user
+
+# report files & files
+/report/*.RData
+/report/*.log
+/report/*.tex
+/report/*.gz
+/report/*.pdf
+!/report/epidemia_report_demo_example_2016W24.pdf
+/report/figure/*
+/validation/*.log
+/validation/*.tex
+/validation/*.gz
+/validation/figure/*
+#exceptions for validation
+/validation/*.RDS
+/validation/*.pdf
+!/validation/validation_example_test_pf_tot_2018W1_52wks.RDS
+!/validation/validation_example_test_pf_tot_2018W1_52wks.pdf
+!/validation/validation_example_test_pv_only_2018W1_52wks.RDS
+!/validation/validation_example_test_pv_only_2018W1_52wks.pdf
+
+# testing
+/devtest/*
+
+# log files
+*.log
+/log_missing_environ.csv
+/log_missing_report_epidemiology.csv
+
+# documentation extras
+/documentation/figs/*
+/documentation/*.tex
+

@@ -1,0 +1,853 @@
+<<set_default_opts, echo=FALSE>>=
+
+## Demo malaria version
+
+opts_chunk$set(echo = FALSE, dev = "png", dpi=150, concordance=TRUE)
+@
+
+<<report_data_functions, message=FALSE, warning=FALSE, echo=FALSE, include=FALSE>>=
+if (!require("pacman")) install.packages("pacman")
+library(pacman)
+pacman::p_load(knitr, tinytex,  
+               readxl, magrittr, dplyr, tidyr, lubridate, readr, 
+               stringr, forcats, broom, xtable, scales, grid, gridExtra, 
+               ggplot2, 
+               #sp, rgdal, rgeos, 
+               ggrepel, 
+               #ggpolypath,
+               sf,
+               purrr) 
+library(epidemiar)
+
+#load report data
+load("report_data.RData")
+
+#loading of local ggplot2 themes
+source("../R/arrange_and_draw.R")
+
+#load st objects of Amhara spatial data
+load("../data/am_sf.RData")
+load("../data/am_sf_simpl.RData")
+
+#zone level for overlay
+# Note: do NOT do this on simplified set, will introduce a lot of artifacts
+zones_am <- am_sf %>% 
+  group_by(zone) %>% 
+  summarize(geometry = sf::st_union(geometry)) %>% 
+  ungroup
+
+#read woreda information (metadata) file
+woredas <- read_csv("../data/amhara_woredas.csv") 
+
+#woredas used in report data
+report_woreda_names <- params_meta$groupings
+
+#woreda info on used woredas
+report_woredas <- tibble(report_woreda_names) %>% 
+  left_join(woredas %>% select(woreda_name, WID, zone),
+            by = c("report_woreda_names" = "woreda_name")) %>% 
+  rename(woreda_name = report_woreda_names) %>% 
+  arrange(zone, woreda_name)
+
+#Base plotting
+#often used themes (originally from ggplot_themes)
+theme_map <- theme(axis.title = element_blank(),
+                   axis.text = element_blank(),
+                   axis.ticks = element_blank(),
+                   axis.line = element_blank(),
+                   panel.background = element_blank(),
+                   panel.grid = element_blank(),
+                   axis.ticks.length = unit(0, "null"))
+theme_no_margin <- theme(plot.margin = unit(c(0, 0, 0, 0), "mm"))
+#used in alert summary maps
+theme_model_result_map <- theme(legend.key.height = unit(3.0, "lines"))
+
+#Create base plot 
+# other plots will drawn on top - but base will only have to be created once
+base_amhara_plot <- ggplot() +
+  #Amhara region
+  geom_sf(data = am_sf_simpl, fill = NA, color = "gray80", size = 0.05) +
+  #plot adjustments
+  scale_x_continuous(expand = c(0,0)) +
+  scale_y_continuous(expand = c(0,0)) +
+  theme_map + 
+  theme_no_margin 
+
+@
+
+<<generate_report_title>>=
+#Dates are the week prior to start of forecasting
+#When running default/expected weekly reports, this will be the date of last known epidemiological data
+#But may change if user sets fc_start_date differently
+report_week_end <- params_meta$report_dates$prev$max %>% 
+  format(format = "%B %d, %Y")
+report_week_start <- as.Date(params_meta$report_dates$prev$max - as.difftime(6, units = "days")) %>% 
+  format(format = "%B %d, %Y")
+report_week_dates <- paste0("Week ", lubridate::isoweek(params_meta$report_dates$prev$max), ": ",
+                            report_week_start, " - ", report_week_end)
+report_dates_short <- paste0(lubridate::isoyear(params_meta$report_dates$prev$max),
+                             " Week ", lubridate::isoweek(params_meta$report_dates$prev$max))
+
+report_short_name <- "Demonstration Malaria Report"
+report_title <- paste0("Demonstration Malaria Early Detection and Early Warning Report",
+                       "\\\\for Selected Woredas in the Amhara Region of Ethiopia",
+                       "\\\\", report_week_dates)
+report_rhead <- paste0(report_short_name, ":  ", report_dates_short)
+
+
+#and dates for captions/etc.
+ed_start <- format(params_meta$report_dates$ed_sum$min, format = "%b %d, %Y")
+ed_end <- format(params_meta$report_dates$ed_sum$max, format = "%b %d, %Y")
+ew_start <- format(params_meta$report_dates$forecast$min, format = "%b %d, %Y")
+ew_end <- format(params_meta$report_dates$forecast$max, format = "%b %d, %Y")
+
+#other variables
+num_grps <- length(params_meta$groupings)
+#boolean for if early detection period existed
+early_exists <- !is.na(params_meta$report_dates$ed_sum$min)
+
+@
+
+\documentclass{article}
+\usepackage[a4paper]{geometry}
+\geometry{verbose,tmargin=2.5cm,bmargin=2.5cm,lmargin=2cm,rmargin=2.7cm}
+\usepackage{hyperref}
+\usepackage{float}
+\usepackage{titling}
+\setlength{\droptitle}{-15ex} % shift title up
+\setlength{\headheight}{24pt} %added b/c of warnings too small
+
+% \usepackage[title]{appendix}
+
+\usepackage{fancyhdr}
+\pagestyle{fancy}
+\rhead{\Sexpr{report_rhead}}
+\renewcommand{\headrulewidth}{0pt}
+\rfoot{Report compiled on \Sexpr{format(Sys.Date(), "%d %B %Y")}}
+
+\begin{document}
+
+\title{\Sexpr{report_title}}
+\author{Simulated Data}
+\maketitle
+
+\overfullrule=2cm
+
+\section{Alert Summaries} \label{alert_summaries}
+\subsection{Alert Map: \textit{P. falciparum} and mixed malaria }
+
+<<summary_map_falciparum, warning=FALSE, message=FALSE, fig.width = 6.10236, fig.height=6.5, fig.pos='H', out.width='.96\\linewidth'>>=
+
+#ED/EW summary labels for legend
+ed_overview_labels <- c("Low: No alert", 
+                        "Moderate: Alert for any 1 week\n  in early detection summary period", 
+                        "High: Alert for 2 or more weeks\n  in early detection summary period")
+ew_overview_labels <- c("Low: No alerts",
+                        "Moderate: Alert for any 1 week\n  in forecast period",
+                        "High: Alerts for 2 or more weeks\n  in forecast period")
+
+overview_colors <- c("#d7301f", "#fc8d59", "#b8d6fd", "gray98")
+
+#early warning
+summary_map_data <- summary_data %>%
+  #get falciparum data
+  filter(respon_var == "pfm") %>%
+  #Hook into existing short labels for full labels to display in legend
+  mutate(ed_legend = if(early_exists){
+    factor(ed_sum_level, levels = levels(ed_sum_level), 
+           labels = ed_overview_labels, ordered = TRUE)
+  } else {
+    #else set label levels from what they would have been
+    factor(ed_sum_level, levels = c("Low", "Medium", "High"),
+           labels = ed_overview_labels, ordered = TRUE)
+  },
+  ew_legend = factor(ew_level, levels = levels(ew_level),
+                     labels = ew_overview_labels, ordered = TRUE),
+  #reverse the factor order for plotting
+  ed_legend = factor(ed_legend, levels = rev(levels(ed_legend))),
+  ew_legend = factor(ew_legend, levels = rev(levels(ew_legend)))) %>%
+  #get all woredas, get WID
+  right_join(woredas %>% select(woreda_name, WID),
+             by = "woreda_name") %>%
+  #get "No Data" instead of NA for non included woredas
+  mutate_at(c("ed_legend", "ew_legend"), fct_explicit_na, na_level = "No Data")
+
+
+list(#Early Detection
+  base_amhara_plot +
+    geom_sf(data = am_sf_simpl %>%
+              left_join(summary_map_data, by = "WID"),
+            aes(fill = ed_legend),
+            #woreda boundaries
+            color = "gray70", size = 0.05) +
+    scale_fill_manual(name = "Early Detection Alerts",
+                      values = overview_colors, drop = FALSE) +
+    theme_model_result_map +
+    #zone overlay
+    geom_sf(data = zones_am, fill = NA, color = "gray40"),
+  #Early Warning
+  base_amhara_plot +
+    geom_sf(data = am_sf_simpl %>%
+              left_join(summary_map_data, by = "WID"),
+            aes(fill = ew_legend),
+            #woreda boundaries
+            color = "gray70", size = 0.05) +
+    scale_fill_manual(name = "Early Warning Alerts",
+                      values = overview_colors, drop = FALSE) +
+    theme_model_result_map +
+    #zone overlay
+    geom_sf(data = zones_am, fill = NA, color = "gray40")) %>%
+  arrange_and_draw(ncol = 1)
+
+@
+
+\begin{flushright}
+\noindent Early Detection Period: Last \Sexpr{params_meta$report_settings$ed_summary_period} weeks before forecasting start date.
+
+Date range: \Sexpr{ed_start} through \Sexpr{ed_end}.
+
+\smallskip
+\noindent Early Warning Period: Forecasting period of \Sexpr{params_meta$report_settings$fc_future_period} weeks.
+
+Date range: \Sexpr{ew_start} through \Sexpr{ew_end}.
+\end{flushright}
+
+\newpage
+\subsection{Alert Listing: \textit{P. falciparum} and mixed malaria}
+
+<<alert_list_falciparum, message = FALSE, echo=FALSE, results='asis'>>=
+
+summary_alerts <- summary_data %>% 
+  #get falciparum data
+  filter(respon_var == "pfm") %>% 
+  left_join(report_woredas %>% 
+              select(woreda_name, zone),
+            by = "woreda_name")
+
+sum_tbl <- summary_alerts %>% 
+  filter(!ed_sum_level == "Low" | !ew_level == "Low") %>% 
+  mutate(Both = ifelse(!ed_sum_level == "Low" & !ew_level == "Low", "Yes", "-")) %>% 
+  #arrange(desc(Both), desc(ed_sum_level), desc(ew_level), zone, woreda_name) %>% 
+  arrange(zone, woreda_name) %>% 
+  select(Zone = zone,
+         Woreda = woreda_name,
+         'Early Detection Alert' = ed_sum_level,
+         'Early Warning Alert' = ew_level,
+         Both) %>% 
+  xtable()
+
+print(sum_tbl, floating = FALSE, comment = FALSE)  
+
+@
+
+%to get caption at bottom on page
+\vspace{\fill}
+\noindent Early Detection Alerts are alerts generated during the early detection period, and are based on the reported incidence in these weeks. ``High'' level indicates two or more weeks in this period had incidences greater than the alert threshold, ``Medium'' means one week, and ``Low'' means no weeks had alerts.  
+
+\medskip
+\noindent Early Warning Alerts are alerts generated during the forecast (early warning period), and are based on the relationship between historical incidence values and environmental conditions. Alerts occur when this relationship shows a forecasted value greater than the alert threshold. ``High'' indicates two or more weeks, ``Medium'' one week, and ``Low'' having zero weeks with alert status during the early warning period. 
+
+\medskip
+\noindent Looking at the results in combination, Early Detection Alerts inform on recent potentially abnormally high incidence values, while Early Warning Alerts indicate that the environmental conditions and seasonality are favorable (or unfavorable) for abnormally high incidence values. The column ``Both'' indicates if alarm levels for a woreda are at Medium or High for both Early Detection and Early Warning. 
+
+\newpage
+\subsection{Alert Map: \textit{P. vivax}}
+
+<<summary_map_vivax, warning=FALSE, message=FALSE, fig.width = 6.10236, fig.height=6.5, fig.pos='H', out.width='.96\\linewidth'>>=
+
+summary_map_data <- summary_data %>% 
+  #get vivax data
+  filter(respon_var == "pv") %>% 
+  #Hook into existing short labels for full labels to display in legend
+  mutate(ed_legend = if(early_exists){
+    factor(ed_sum_level, levels = levels(ed_sum_level), 
+           labels = ed_overview_labels, ordered = TRUE)
+  } else {
+    #else set label levels from what they would have been
+    factor(ed_sum_level, levels = c("Low", "Medium", "High"),
+           labels = ed_overview_labels, ordered = TRUE)
+  },
+         ew_legend = factor(ew_level, levels = levels(ew_level), 
+                            labels = ew_overview_labels, ordered = TRUE),
+         #reverse the factor order for plotting
+         ed_legend = factor(ed_legend, levels = rev(levels(ed_legend))),
+         ew_legend = factor(ew_legend, levels = rev(levels(ew_legend)))) %>% 
+  #get all woredas, get WID
+  right_join(woredas %>% select(woreda_name, WID),
+             by = "woreda_name") %>%
+  #get "No Data" instead of NA for non included woredas
+  mutate_at(c("ed_legend", "ew_legend"), fct_explicit_na, na_level = "No Data")
+
+list(#Early Detection
+  base_amhara_plot +
+    geom_sf(data = am_sf_simpl %>% 
+              left_join(summary_map_data, by = "WID"),
+            aes(fill = ed_legend),
+            #woreda boundaries
+            color = "gray70", size = 0.05) +
+    scale_fill_manual(name = "Early Detection Alerts",
+                      values = overview_colors, drop = FALSE) +
+    theme_model_result_map +
+    #zone overlay
+    geom_sf(data = zones_am, fill = NA, color = "gray40"),
+  
+  #Early Warning
+  base_amhara_plot +
+    geom_sf(data = am_sf_simpl %>% 
+              left_join(summary_map_data, by = "WID"),
+            aes(fill = ew_legend),
+            #woreda boundaries
+            color = "gray70", size = 0.05) +
+    scale_fill_manual(name = "Early Warning Alerts",
+                      values = overview_colors, drop = FALSE) +
+    theme_model_result_map +
+    #zone overlay
+    geom_sf(data = zones_am, fill = NA, color = "gray40")) %>%
+  #1 column
+  arrange_and_draw(ncol = 1)
+
+@
+
+\begin{flushright}
+\noindent Early Detection Period: Last \Sexpr{params_meta$report_settings$ed_summary_period} weeks before forecasting start date.
+
+Date range: \Sexpr{ed_start} through \Sexpr{ed_end}.
+
+\smallskip
+\noindent Early Warning Period: Forecasting period of \Sexpr{params_meta$report_settings$fc_future_period} weeks.
+
+Date range: \Sexpr{ew_start} through \Sexpr{ew_end}.
+\end{flushright}
+
+\newpage
+\subsection{Alert Listing: \textit{P. vivax}}
+
+<<alert_list_vivax, message = FALSE, echo=FALSE, results='asis'>>=
+
+summary_alerts <- summary_data %>% 
+  #get vivax data
+  filter(respon_var == "pv") %>% 
+  mutate(woreda_name = as.character(woreda_name)) %>% 
+  left_join(report_woredas %>% 
+              select(woreda_name, zone),
+            by = "woreda_name")
+
+sum_tbl <- summary_alerts %>% 
+  filter(!ed_sum_level == "Low" | !ew_level == "Low") %>% 
+  mutate(Both = ifelse(!ed_sum_level == "Low" & !ew_level == "Low", "Yes", "-")) %>% 
+  arrange(zone, woreda_name) %>% 
+  select(Zone = zone,
+         Woreda = woreda_name,
+         'Early Detection Alert' = ed_sum_level,
+         'Early Warning Alert' = ew_level,
+         Both) %>% 
+  xtable()
+
+print(sum_tbl, floating = FALSE, comment = FALSE)  
+
+@
+
+%to get caption at bottom on page
+\vspace{\fill}
+\noindent Early Detection Alerts are alerts generated during the early detection period, and are based on the reported incidence in these weeks. ``High'' level indicates two or more weeks in this period had incidences greater than the alert threshold, ``Medium'' means one week, and ``Low'' means no weeks had alerts.  
+
+\medskip
+\noindent Early Warning Alerts are alerts generated during the forecast (early warning period), and are based on the relationship between historical incidence values and environmental conditions. Alerts occur when this relationship shows a forecasted value greater than the alert threshold. ``High'' indicates two or more weeks, ``Medium'' one week, and ``Low'' having zero weeks with alert status during the early warning period. 
+
+\medskip
+\noindent Looking at the results in combination, Early Detection Alerts inform on recent potentially abnormally high incidence values, while Early Warning Alerts indicate that the environmental conditions and seasonality are favorable (or unfavorable) for abnormally high incidence values. The column ``Both'' indicates if alarm levels for a woreda are at Medium or High for both Early Detection and Early Warning. 
+
+
+\newpage
+\subsection{Reference Map}
+
+<<group_map, message=FALSE, warning=FALSE, fig.width = 6.10236, fig.height=7.5, fig.pos='H', out.width='.96\\linewidth'>>=
+
+#calculate better centroids | point on surface 
+#https://stackoverflow.com/questions/52522872/r-sf-package-centroid-within-polygon
+st_centroid_within_poly <- function(poly){
+  
+  # check if centroid is in polygon
+  ctrd <- st_centroid(poly, of_largest_polygon = TRUE)
+  in_poly <- diag(st_within(ctrd, poly, sparse = F))
+  
+  if (in_poly){
+    return(ctrd)
+  }
+  
+  ## For points that were not within polygon get st_point_on_surface()
+  ctrd_inpoly <- st_point_on_surface(poly)
+}
+
+
+am_sf_ref <- am_sf_simpl %>%
+  #only label report woredas
+  mutate(fill_name = ifelse(as.character(woreda) %in% report_woreda_names,
+                            as.character(woreda), NA)) %>% 
+  #get the best points for labeling
+  mutate(lon = purrr::map_dbl(geometry, ~st_centroid_within_poly(.x) %>% 
+                                st_coordinates() %>% 
+                                .[ , "X"]),
+         lat = purrr::map_dbl(geometry, ~st_centroid_within_poly(.x) %>% 
+                                st_coordinates() %>% 
+                                .[ , "Y"]))
+
+
+base_amhara_plot +
+  #just report woredas with fill_name
+  geom_sf(data = am_sf_ref,
+          aes(fill = fill_name),
+          #woreda boundaries
+          color = "gray50") +
+  #remove legend
+  guides(fill = "none") +
+  #color in woredas something with various colors, but not very bright
+  scale_fill_manual(values = rainbow(length(report_woreda_names), s = 0.4, v = 0.9),
+                    na.value = "gray85") +
+  #zone overlay
+  geom_sf(data = zones_am, fill = NA, color = "gray10") +
+  #add text of woreda names
+  #repel text
+  ggrepel::geom_text_repel(data = am_sf_ref,
+                           aes(x = lon, 
+                               y = lat,
+                               label = fill_name),
+                           # reduce text size
+                           size = 2.9, 
+                           # keep text closer to centroids
+                           box.padding = 0.01,
+                           point.padding = 0,
+                           #no labeling of non-report woredas
+                           na.rm = TRUE) +
+  #titles
+  labs(title = "Woredas in the EPIDEMIA project",
+       subtitle = "Amhara Region, Ethiopia") + 
+  #theme adjustments
+  #add some extra space below titles
+  theme(plot.subtitle = element_text(margin = margin(b = 20, unit = "pt")))
+
+@
+
+\newpage
+\section{Woreda Reports} \label{woredas}
+<<run_all_groups, include=FALSE>>=
+
+## Setup outside of loop - pull out as much as possible to reduce repeating the same calculations (save time)
+#modeling data
+modeling_results_data <- modeling_results_data %>%
+  #recoding Early Detection Alert for graphing (NA to not show up for when not alert, and 0.01 to graph at bottom of chart)
+  mutate(value = case_when(series == "ed" & value == 0 ~ NA_real_,
+                           series == "ed" & value == 1 ~ 0.01,
+                           TRUE ~ value),
+         value = case_when(series == "ew" & value == 0 ~ NA_real_,
+                           series == "ew" & value == 1 ~ 0.01,
+                           TRUE ~ value)) %>% 
+  inner_join(tibble(respon_var = c("pfm", "pv"),
+                    facet = c("italic(P.~falciparum)~and~mixed", "italic(P.~vivax)")),
+             by = "respon_var") %>% 
+  #extra spacing added as a hack to increase distance between items in legend
+  #known issue in ggplot that margin doesn't do what it should
+  #https://github.com/tidyverse/ggplot2/issues/1502
+  # now appears to be fixed, so removing extra spaces
+  mutate(lab = factor(lab,
+                      levels = c("Early Detection Alert", "Early Warning Alert", "Alert Threshold", 
+                                 "Forecast Trend", "Observed"),
+                      #labels = c("Early Detection Alert ", "Early Warning Alert ", "Alert Threshold ", 
+                      #           "Forecast Trend ", "Observed "),
+                      labels = c("Early Detection Alert", "Early Warning Alert", "Alert Threshold", 
+                                 "Forecast Trend", "Observed"),
+                      #put in correct order
+                      ordered = TRUE)) 
+
+#common graphing parameters set outside of loop
+woreda_legend <- theme(legend.title=element_blank(),
+                       legend.key.width = unit(1.5, "lines"),
+                       legend.key = element_blank(),
+                       legend.justification = c(0, 0), 
+                       legend.position = c(-.03, 1),
+                       legend.direction = "horizontal",
+                       legend.background = element_blank())
+
+woreda_panel_theme <- theme(panel.border = element_blank(),
+                            panel.background = element_blank(),
+                            panel.grid.major.y = element_line("gray80", 0.4),
+                            panel.grid.major.x = element_blank(),
+                            plot.margin = unit(c(2, 1, .5, .5), "lines"))  
+
+woreda_x_axis <- theme(axis.title.x = element_blank(),
+                       axis.text.x = element_text(size = rel(0.73)),
+                       axis.ticks.length =  unit(0.1, "lines"))
+#all have same date range
+woreda_axis_dates <- params_meta$report_dates$full$seq
+woreda_axis_weeks <- modeling_results_data %>% 
+  select(obs_date, week_epidemiar) %>% 
+  arrange(obs_date) %>% 
+  unique() %>% 
+  pull(week_epidemiar)
+
+#set up for environmental timeseries
+#to create a disconnected series in observed (where there are interpolated values), there must be NA values
+intp_obs <- environ_timeseries %>% 
+  filter(data_source == "Imputed") %>% 
+  mutate(val_epidemiar = NA,
+         data_source = "Observed")
+#bind back in
+environ_timeseries <- environ_timeseries %>% 
+  bind_rows(intp_obs) 
+#env ts data set up
+environ_timeseries <- environ_timeseries %>%
+  #desired order for variables
+  mutate(environ_var_code = factor(environ_var_code, c("totprec", "lst_day", "ndwi6"), ordered = TRUE)) %>% 
+  #desired order for data source, and kludge fixing the ggplot horizontal spacing in legend issue
+  mutate(data_source = factor(data_source, 
+                              levels = c("Observed", "Imputed"), 
+                              labels = c("Observed    ", "Imputed    "),
+                              ordered = TRUE)) %>% 
+  #one arrange for all
+  arrange(environ_var_code, data_source, obs_date)
+# labels
+env_labels_tbl <- select(params_meta$env_info, environ_var_code, report_label)
+environ_labels <- setNames(env_labels_tbl$report_label, env_labels_tbl$environ_var_code)
+
+
+
+#order by zones
+report_woredas <- report_woredas %>% 
+  arrange(zone, woreda_name)
+
+out = vector('list', nrow(report_woredas))
+
+for (i in 1:nrow(report_woredas)) {
+  this_woreda <- report_woredas$woreda_name[i]
+  this_zone <- report_woredas$zone[i]
+  this_WID = report_woredas$WID[i]
+  #filter data to woreda
+  this_modeling_data <- modeling_results_data %>%
+    filter(woreda_name == this_woreda)
+  this_environ_timeseries <- environ_timeseries %>% 
+    filter(woreda_name == this_woreda)
+  
+  out[[i]] <- knit_child('epidemia_report_demo_child.Rnw')
+}
+@
+
+\Sexpr{paste(out, collapse = '\n')}
+
+\clearpage
+\newpage
+\section{Maps}
+
+\subsection{Overall Incidence}
+<<overall_incidence_map, warning=FALSE, message=FALSE, fig.width = 6.10236, fig.height=6, fig.pos='H', out.width='.96\\linewidth'>>=
+
+fake_cut_levels <- levels(cut(1, c(0, 0.5, 1, Inf), include.lowest = TRUE))
+
+if (early_exists) {
+  total <- epi_summary %>%
+  group_by(woreda_name) %>% 
+  #shortcut way to get total incidence since ran species separately (but over same time period and population per woreda, so okay to add together)
+  summarize(tot_inc_raw = sum(mean_epi, na.rm = TRUE),
+            #sum(): "For historical reasons, NULL is accepted and treated as if it were integer(0)." 
+            if_all_na = all(is.na(mean_epi))) %>% 
+    #correct if actually all NA
+    mutate(tot_inc = if_else(if_all_na, NA_real_, tot_inc_raw),
+           #cut&factor into categories
+           plot_inc = if_else(if_all_na,
+             #fake cut when NA
+             factor(NA_real_, levels = fake_cut_levels, ordered = TRUE),
+             #when real data
+             cut(tot_inc, c(0, 0.5, 1, Inf), ordered_result = TRUE, include.lowest = TRUE)),
+           plot_inc = factor(plot_inc, levels = rev(levels(plot_inc)))) %>% 
+    #get all woredas, get WID
+  right_join(woredas %>% select(woreda_name, WID),
+             by = "woreda_name") %>%
+  #get "No Data" instead of NA for non included woredas
+  mutate(plot_inc = fct_explicit_na(plot_inc, na_level = "No Data"))
+} else {
+  #create NA dataset for when no early detection period
+  total <- epi_summary %>% 
+    group_by(woreda_name) %>% 
+    summarize(tot_inc = NA) %>% 
+    #fake cut to get same levels
+    mutate(plot_inc = factor(NA, levels = fake_cut_levels, ordered = TRUE),
+           plot_inc = factor(plot_inc, levels = rev(levels(plot_inc)))) %>% 
+    #get all woredas, get WID
+    right_join(woredas %>% select(woreda_name, WID),
+               by = "woreda_name") %>%
+  #get "No Data" instead of NA for non included woredas
+  mutate(plot_inc = fct_explicit_na(plot_inc, na_level = "No Data"))
+}
+
+
+base_amhara_plot +
+  geom_sf(data = am_sf_simpl %>% 
+            left_join(total, by = "WID"),
+          aes(fill = plot_inc),
+          #woreda boundaries
+          color = "gray70", size = 0.05) +
+  scale_fill_manual(name = "Incidence\nper 1000\n",
+                    values = c("#08519c", "#3182bd", "#bdd7e7", "grey98"),
+                    drop = FALSE) +
+  #zone overlay
+  geom_sf(data = zones_am, fill = NA, color = "gray40") +
+  #labeling
+  labs(title = "\nTotal Malaria Incidence",
+       subtitle = "Mean of the Early Detection Period",
+       caption = paste0("Total malaria consists of P. falciparum, P. vivax, and mixed infections.",
+                        "\nSummarized from ", ed_start, " through ", ed_end)) +
+  #add some extra space below titles
+  theme(plot.subtitle = element_text(margin = margin(b = 15, unit = "pt")))
+
+
+
+@
+
+\newpage
+\subsection{Incidence by Species}
+<<species_incidence_map, warning=FALSE, message=FALSE, fig.width = 6.10236, fig.height=9.1, fig.pos='H', out.width='.96\\linewidth'>>=
+
+#factor/cut the incidence levels
+if (early_exists) {
+  species <- epi_summary %>% 
+  mutate(plot_inc = cut(mean_epi, c(0, 0.25, 0.5, Inf), 
+                        ordered_result = TRUE, include.lowest = TRUE), 
+         plot_inc = factor(plot_inc, levels = rev(levels(plot_inc))))
+} else {
+  #create NA dataset for when no early detection period
+  species <- epi_summary %>% 
+    #fake cut to get same levels
+    mutate(plot_inc = factor(NA, levels = levels(cut(0, c(0, 0.25, 0.5, Inf), 
+                                                     ordered_result = TRUE, 
+                                                     include.lowest = TRUE))),
+           plot_inc = factor(plot_inc, levels = rev(levels(plot_inc))))
+}
+
+#grab all non-pilot woredas (need a copy for both species)
+notpilot <- woredas %>% 
+  select(woreda_name) %>% 
+  anti_join(species, by = "woreda_name")
+
+#create full set with species and no data woredas
+species_full <- species %>% 
+  bind_rows(notpilot %>% 
+              mutate(respon_var = "pfm")) %>% 
+  bind_rows(notpilot %>% 
+              mutate(respon_var = "pv")) %>% 
+  #get "No Data" instead of NA for non included woredas
+  mutate(plot_inc = fct_explicit_na(plot_inc, na_level = "No Data")) %>% 
+  #get woreda WID for joining
+  left_join(woredas %>% select(woreda_name, WID),
+            by = "woreda_name")
+
+base_amhara_plot +
+  geom_sf(data = am_sf_simpl %>% 
+            left_join(species_full, by = "WID"),
+          aes(fill = plot_inc),
+          #woreda boundaries
+          color = "gray70", size = 0.05) +
+  facet_wrap(~ respon_var, ncol = 1, 
+             labeller = as_labeller(
+               c(pfm = "paste(italic(`P. falciparum`), ' and mixed infections')", 
+                 pv = "paste(italic(`P. vivax`), ' infections')"),
+               label_parsed)) +
+  scale_fill_manual(name = "Incidence\nper 1000\n",
+                    values = c("#08519c", "#3182bd", "#bdd7e7", "grey98"),
+                    drop = FALSE) +
+  #zone overlay
+  geom_sf(data = zones_am, fill = NA, color = "gray40") +
+  #labeling
+  labs(title = "Malaria Incidence by Species",
+       subtitle = "Mean of the Early Detection Period",
+       caption = paste0("P. falciparum malaria includes mixed infections; P. vivax does not.",
+                        "\nSummarized from ", ed_start, " through ", ed_end)) +
+  theme(strip.background = element_blank())
+
+@
+
+
+\subsection{Environmental Data}
+<<rain_map, warning=FALSE, message=FALSE, fig.width = 6.10236, fig.height=7, fig.pos='H', out.width='.96\\linewidth'>>=
+
+#captions for all Env Anomalies
+anomalies_caption <- "Anomaly values are calculated as the mean of the observed values\nduring the Early Detection Period minus 15-year means."
+
+if (early_exists) {
+  rain_early <- environ_anomalies %>% 
+  #filter for rainfall
+  filter(environ_var_code == "totprec") %>% 
+  #use hard coded cut points
+  mutate(legend_cut = cut(anom_ed_mean, breaks = c(-Inf, -5, -1, 1, 5, Inf), ordered_result = TRUE),
+         #reverse order for proper plotting
+         legend_cut = factor(legend_cut, levels = rev(levels(legend_cut))))
+} else {
+  #create NA dataset for when no early detection period
+  rain_early <- environ_anomalies %>% 
+    #filter for rainfall
+    filter(environ_var_code == "totprec") %>% 
+    #fake cut to get same levels
+    mutate(legend_cut = factor(NA, levels = levels(cut(0, c(-Inf, -5, -1, 1, 5, Inf), 
+                                                     ordered_result = TRUE))),
+           legend_cut = factor(legend_cut, levels = rev(levels(legend_cut))))
+}
+
+  
+rain_anom <- rain_early %>% 
+  #get all woredas, get WID
+  right_join(woredas %>% select(woreda_name, WID),
+             by = "woreda_name") %>%
+  #get "No Data" instead of NA for non included woredas
+  mutate(legend_cut = fct_explicit_na(legend_cut, na_level = "No Data"))
+
+
+base_amhara_plot +
+  geom_sf(data = am_sf_simpl %>% 
+            left_join(rain_anom, by = "WID"),
+          aes(fill = legend_cut),
+          #woreda boundaries
+          color = "gray70", size = 0.05) +
+  #map labels and colors
+  scale_fill_manual(
+    name = "Rainfall\nAnomalies\n(mm)\n",
+    #grayscale distinguishable divergent color scheme:
+    values = c("royalblue4", "royalblue3", "goldenrod1", "sandybrown", "peru", "grey98"),
+    drop = FALSE) +
+  labs(title = "Rainfall Anomalies",
+       subtitle = "",
+       caption = anomalies_caption)
+
+@
+
+\newpage
+<<lstd_map, warning=FALSE, message=FALSE, fig.width = 6.10236, fig.height=7, fig.pos='H', out.width='.96\\linewidth'>>=
+
+if (early_exists) {
+  lst_early <- environ_anomalies %>% 
+  #filter for lst day
+  filter(environ_var_code == "lst_day") %>% 
+  #use hard coded cut points
+  mutate(legend_cut = cut(anom_ed_mean, breaks =  c(Inf, 1.2, 0.4, -0.4, -1.2, -Inf), 
+                          ordered_result = TRUE),
+         #reverse order for proper plotting
+         legend_cut = factor(legend_cut, levels = rev(levels(legend_cut))))
+} else {
+  #create NA dataset for when no early detection period
+  lst_early <- environ_anomalies %>% 
+    #filter for rainfall
+    filter(environ_var_code == "lst_day") %>% 
+    #fake cut to get same levels
+    mutate(legend_cut = factor(NA, levels = levels(cut(0, c(Inf, 1.2, 0.4, -0.4, -1.2, -Inf), 
+                                                     ordered_result = TRUE))),
+           legend_cut = factor(legend_cut, levels = rev(levels(legend_cut))))
+}
+  
+  
+lst_anom <- lst_early %>% 
+  #get all woredas, get WID
+  right_join(woredas %>% select(woreda_name, WID),
+             by = "woreda_name") %>%
+  #get "No Data" instead of NA for non included woredas
+  mutate(legend_cut = fct_explicit_na(legend_cut, na_level = "No Data")) 
+
+base_amhara_plot +
+  geom_sf(data = am_sf_simpl %>% 
+            left_join(lst_anom, by = "WID"),
+          aes(fill = legend_cut),
+          #woreda boundaries
+          color = "gray70", size = 0.05) +
+  #map labels and colors
+  scale_fill_manual(name = "Temp.\n(°C)\n",
+                    #grayscale distinguishable divergent color scheme:
+                    values = c("darkred", "orangered3", "khaki", "#77BEEF", "#8092cd", "grey98"),  
+                    drop = FALSE) +
+  labs(title = "Daytime Land Surface Temperature (LST) Anomalies",
+       subtitle = "",
+       caption = anomalies_caption)
+
+@
+
+
+\newpage
+<<ndwi6_map, warning=FALSE, message=FALSE, fig.width = 6.10236, fig.height=7, fig.pos='H', out.width='.96\\linewidth'>>=
+
+if (early_exists) {
+  ndwi6_early <- environ_anomalies %>% 
+  #filter for ndwi6
+  filter(environ_var_code == "ndwi6") %>% 
+  #use hard coded cut points
+  mutate(legend_cut = cut(anom_ed_mean, breaks =  c(Inf, 0.008, 0.002, -0.002, -0.008, -Inf), 
+                          ordered_result = TRUE),
+         #reverse order for proper plotting
+         legend_cut = factor(legend_cut, levels = rev(levels(legend_cut))))
+} else {
+    #create NA dataset for when no early detection period
+  ndwi6_early <- environ_anomalies %>% 
+    #filter for rainfall
+    filter(environ_var_code == "ndwi6") %>% 
+    #fake cut to get same levels
+    mutate(legend_cut = factor(NA, levels = levels(cut(0, c(Inf, 0.008, 0.002, -0.002, -0.008, -Inf), 
+                                                     ordered_result = TRUE))),
+           legend_cut = factor(legend_cut, levels = rev(levels(legend_cut))))
+
+}
+  
+
+ndwi6_anom <- ndwi6_early %>% 
+  #get all woredas, get WID
+  right_join(woredas %>% select(woreda_name, WID),
+             by = "woreda_name") %>%
+  #get "No Data" instead of NA for non included woredas
+  mutate(legend_cut = fct_explicit_na(legend_cut, na_level = "No Data"))
+
+base_amhara_plot +
+  geom_sf(data = am_sf_simpl %>% 
+            left_join(ndwi6_anom, by = "WID"),
+          aes(fill = legend_cut),
+          #woreda boundaries
+          color = "gray70", size = 0.05) +
+  #map labels and colors
+  scale_fill_manual(name = "NDWI6\nAnomaly\n",
+                    #grayscale distinguishable divergent color scheme:
+                    values = c("darkgreen", "chartreuse4", "khaki", "#f4b060", "#d88c0f", "grey98"),
+                    drop = FALSE) +
+  labs(title = "Normalized Difference Water Index Anomalies",
+       subtitle = "NDWI is an index for vegetation water content",
+       caption = anomalies_caption)
+
+@
+
+
+\newpage
+\section{Background} \label{background}
+\subsection{Overview} \label{overview}
+The goal of the EPIDEMIA project is to integrate information from malaria surveillance with remotely-sensed environmental data to support the monitoring and forecasting of malaria risk in the Amhara region of Ethiopia. 
+
+\medskip
+This report presents environmental and epidemiological surveillance and forecasting results for \Sexpr{num_grps} woredas in the Amhara region for the past \Sexpr{length(params_meta$report_dates$known$seq)} weeks through \Sexpr{params_meta$report_settings$fc_future_period} weeks forecasted into the future. 
+
+\begin{description}
+\item [Alerts] are generated by an anomaly detection algorithm run over the number of cases (observed or estimated, adjusted for population) during the entire time length of the report. We have chosen a variation of the Farrington Improved algorithm, as tests showed that this algorithm performed best for our data. The Farrington method, in various forms, is actively used at some European health centres for surveillance. The Farrington method accounts for seasonality, long-term trends, and past events when calculating the alert thresholds. Alerts are triggered when incidence passes this threshold. Historical alerts for an individual woreda can be viewed in the timeseries control charts appearing on the woreda report page. 
+
+\item [Early Detection Alerts] are alerts that are triggered during the early detection period, which defined as the \Sexpr{length(params_meta$report_dates$ed_sum$seq)} most recent weeks of known epidemiology data. The number of alerts are summarized in section \ref{alert_summaries}, Alert Summaries: showing maps and lists of woredas that have early detection alerts for both \textit{P. falciparum} and mixed malaria, and \textit{P. vivax}. ``High'' level indicates two or more weeks in this period had incidences greater than the alert threshold, ``Medium'' means that one week was in alert status, and ``Low'' means no weeks had alerts. This period is highlighted on the individual woreda report control charts in section \ref{woredas}, Woreda Reports. 
+
+\smallskip
+\item [Forecast Models] were developed through the use of a genetic algorithm to determine the optimal combination of environmental variables, as well as the clustering of woredas. Woredas were clustered, or grouped, by the pattern of how the malaria incidence behaves, or responds, to the environmental variables - woredas where these responses were similar were placed in the same cluster. This gives us greater ability and power for the forecast model. The model is based on a general additive model (GAM) regression of multiple factors, including the woreda cluster, lagged anomalies of the environmental drivers, long terms trends, and seasonality. 
+
+
+For the \textit{P. falciparum} and mixed malaria model, the environmental variables are rainfall, daytime Land Surface Temperature (LST), and Normalized Difference Water Index (NDWI6; a satellite-derived index for vegetation water content). For the \textit{P. vivax} model, the environmental variables are rainfall, the mean of daytime and nighttime LST, and NDWI6.
+
+\item [Early Warning Alerts] are alerts generated by the Farrington detection algorithm run over the future (early warning period) forecast estimates. These early warning alerts indicate that the environmental conditions are favorable (or unfavorable) for abnormally high incidence values, based on past trends. In section \ref{alert_summaries}, Alert Summaries, which includes both \textit{P. falciparum} and mixed malaria, and \textit{P. vivax}, ``High'' indicates two or more weeks, ``Medium'' one week, and ``Low'' having zero weeks with alert status during the early warning period. Timeseries graphs showing which week is triggering an alert can be found on the individual woreda report charts in section \ref{woredas}, Woreda Reports. 
+\end{description}
+
+\newpage
+\subsection{Woreda Report Description}
+The individual woreda report displays control charts related to incidence and alerts (top half) and timeseries graphs of the environmental variables (bottom half). 
+
+\smallskip
+There are two control charts, one for \textit{P. falciparum} and mixed malaria, and one for \textit{P. vivax}. Each chart displays the observed incidence of malaria for the previous \Sexpr{length(params_meta$report_dates$known$seq)} weeks of known epidemiological data. Using the models defined in the previous section \ref{overview}, forecasts for both historical values (\Sexpr{length(params_meta$report_dates$known$seq)} weeks) and future estimates (\Sexpr{params_meta$report_settings$fc_future_period} weeks), are shown. Alert thresholds, calculated from the anomaly detection algorithm, are calculated and plotted for the entire report length. If too many of the historical case counts for that time of year have been zero, alert thresholds may not be shown. Early detection alerts (as filled triangles at the base of the graph at that week) are shown both for historical weeks, and in the shaded early detection period (defined as the \Sexpr{length(params_meta$report_dates$ed_sum$seq)} most recent weeks of known epidemiology data).  Early warning alerts (unfilled triangles in the differently shaded early warning period) are shown based on the forecasts. See previous section \ref{overview} for further details on alerts. The vertical line demarks the time point between known data and forecast estimates. 
+
+\smallskip
+The environmental timeseries graphs show the variables associated with \textit{P. falciparum} and mixed malaria: rainfall, daytime Land Surface Temperature (LST), and Normalized Difference Water Index (NDWI6). Observed values (derived from satellite data) are marked as filled circles, and any values that needed to be interpolated (because of missing data due to clouds, etc.) are in unfilled circles. For the future values, shown in unfilled squares, the data has been extended based on the mean of the previous week and on the historical mean for that week of the year. The gray shaded area are the historical environmental covariate values: shown from the 25th to 75th percentile, called the 'Middle 50\%'. All analysis and interpolation of environmental data has been done on a per day basis, and were summarized to a weekly level (sum of rainfal, mean of temperature, etc.) for display. The vertical line demarks the time point between known epidemiological data and forecast estimates, same as in the control charts above. Depending on when the report is run, known environmental data may be used in the forecast portion. 
+
+
+\clearpage
+\end{document}

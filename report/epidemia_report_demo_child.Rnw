@@ -1,0 +1,126 @@
+\noindent
+% first column
+\begin{minipage}[t]{0.2\textwidth}
+\vspace{0pt}
+<<echo=FALSE, fig.width=1, fig.height=1>>=
+
+#upper left mini-map of woreda in Amhara
+base_amhara_plot + 
+  geom_sf(data = st_geometry(am_sf_simpl %>% filter(WID == this_WID)), fill = "darkred")
+  
+@
+\end{minipage}
+\hspace{0.00\textwidth}
+%second column
+\begin{minipage}[t]{0.75\textwidth}
+\vspace{8pt}
+\subsection{\Sexpr{paste(this_zone, ": ", this_woreda, sep = "")}}
+%\vspace{4pt}
+
+%\Sexpr{zone} Zone
+
+\noindent\makebox[\linewidth]{\rule{\linewidth}{0.4pt}}
+\end{minipage}
+
+\vspace{6pt}
+
+<<message=FALSE, warning=FALSE, fig.width=7, fig.height=9.1, out.width='.96\\linewidth'>>=
+
+
+## Control Chart
+control_chart <- this_modeling_data %>%
+  #and plot
+  ggplot(aes(x = obs_date, y = value, color = lab)) +
+  facet_wrap(~ facet, scales = "free_y", ncol = 1, 
+             strip.position = "right", labeller = label_parsed) +
+  #box for early detection
+  {if (early_exists) annotate("rect", xmin = params_meta$report_dates$ed_sum$min - 2, 
+           xmax = params_meta$report_dates$ed_sum$max + 2,
+           ymin = -Inf, ymax = Inf, fill = "skyblue1", alpha = 0.1)} +
+  #box for early warning
+  annotate("rect", xmin = params_meta$report_dates$forecast$min - 2, 
+           xmax = params_meta$report_dates$forecast$max + 2,
+           ymin = -Inf, ymax = Inf, fill = "orchid", alpha = 0.1) +
+  #label for box for early detection
+  {if (early_exists) annotate("text", label = "Early Detection",
+           x = mean(params_meta$report_dates$ed_sum$seq), 
+           #x = params_meta$report_dates$ed_sum$max + 2, hjust = 1, #end of box, right justified
+           y = Inf, vjust = "top",
+           color = "steelblue", lineheight = 1, size = 3.1)} +
+  #label for box for early warning
+  annotate("text", label = "Early Warning",
+           x = mean(params_meta$report_dates$forecast$seq), 
+           #x = params_meta$report_dates$forecast$min - 2, hjust = 0, #beginning of box, left justified
+           y = Inf, vjust = "top",
+           color = "darkorchid4", lineheight = 1, size = 3.1) +
+  #dashed line to indicate start of requested forecast period (or default week after known data)
+  geom_vline(aes(xintercept = as.numeric(params_meta$report_dates$prev$max + 3.5)),
+             linetype = "dashed", color = "gray50") +
+  #all the series 
+  geom_line(aes(linetype = lab, size = lab)) +
+  #    geom_ribbon(aes(ymin = lower, ymax = upper, fill = lab, alpha = lab), color = NA) +
+  geom_point(aes(shape = lab, size = lab)) +
+  scale_x_date(breaks = woreda_axis_dates, labels = woreda_axis_weeks, minor_breaks = NULL) +
+  #attempt to pad top of chart to avoid crowding
+  scale_y_continuous(expand = c(0.2, 0), limits = c(0, NA)) +
+  labs(y = "Incidence (per 1000)") +
+  scale_color_manual(values = c("tomato", "tomato", "tomato3", "mediumorchid4", "black")) +
+  #    scale_fill_manual(values = c(NA, NA, "thistle", NA)) +
+  scale_linetype_manual(values = c(0, 0, 5, 0, 1)) +
+  scale_shape_manual(values = c(17, 2, NA, 124, NA)) +
+  scale_size_manual(values = c(2.5, 2.5, 0.5, 4, 0.5)) +
+  scale_alpha_manual(values = c(0, 0, 0, 0.5, 0)) +
+  # plot themes
+  theme_gray(base_size = 11, base_family = "") +
+  woreda_legend + 
+  woreda_x_axis +
+  woreda_panel_theme
+
+
+## Env timeseries graphs
+env_ts <- this_environ_timeseries %>%
+  #plot
+  ggplot(aes(obs_date, val_epidemiar)) +
+  #same vertical as in incidence graph, delineating known vs forecast values
+  geom_vline(aes(xintercept = as.numeric(params_meta$report_dates$prev$max + 3.5)),
+             linetype = "dashed", color = "gray50") +
+  #line color by variable, and group/type by source
+  geom_line(aes(color = environ_var_code, group = data_source, linetype = data_source), size = 0.5) + 
+  #point color by variable, and shapes by source
+  geom_point(aes(color = environ_var_code, shape = data_source), size = 2.5) + 
+  #faceting for different environment variables
+  facet_wrap(~ environ_var_code, ncol = 1, scales = "free_y", 
+             strip.position = "right", labeller = as_labeller(environ_labels)) +
+  scale_x_date(breaks = params_meta$report_dates$full$seq, labels = woreda_axis_weeks, minor_breaks = NULL) +
+  #colors of environmental variables
+  scale_color_manual(values = c("navyblue", "red3", "cyan4"), guide = FALSE) + 
+  #shape, lines of data source series per env var 
+  scale_shape_manual(values = c(20, 1), drop = FALSE) + 
+  scale_linetype_manual(values = c("solid", "blank"), drop = FALSE) +
+  #historical values in the background
+  geom_ribbon(aes(ymax = ref_uq, ymin = ref_lq, fill = "Historical Middle 50%"), alpha = 0.3) + 
+  scale_fill_manual(label = "Historical Middle 50%", breaks = "Historical Middle 50%", values = "grey60") +
+  #other plotting
+  labs(y = "Value",
+       caption = "Note: Displayed as weekly data, but analysis and interpolation was performed on daily data.") +
+  theme_gray(base_size = 11, base_family = "") +
+  #reduce caption size
+  theme(plot.caption = element_text(size=8)) +
+  woreda_legend + 
+  woreda_x_axis +
+  woreda_panel_theme +
+  #make the data_source and historical legend items on one line
+  theme(legend.box = "horizontal") +
+  #reorder legend so that data_source (shape+linetype) comes before historical (fill/ribbon)
+  guides(shape = guide_legend(order = 1), linetype = guide_legend(order = 1), fill = guide_legend(order = 2))
+  
+  
+##Draw all
+arrange_and_draw(list(control_chart, env_ts))
+  
+@
+\vfill{}
+{\footnotesize See last report section \ref{background} for a description of details and individual woreda reports.}
+
+\newpage
+\clearpage
